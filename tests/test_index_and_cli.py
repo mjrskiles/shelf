@@ -7,7 +7,7 @@ from shelf import ShelfError
 from shelf.cli import main
 from shelf.index import Index, _phrase_query
 from shelf.manifest import Document, Manifest
-from tests.conftest import poppler
+from tests.conftest import make_pdf, poppler
 
 
 def test_phrase_query_quotes_tokens() -> None:
@@ -73,6 +73,11 @@ def test_cli_end_to_end(shelf_root: Path, sample_pdf: Path, capsys: pytest.Captu
     assert main(["--root", root, "edit", "rm-test", "--revision", "Rev 2"]) == 0
     assert Manifest.load(shelf_root / "shelf.json").get("rm-test").revision == "Rev 2"
 
+    # Offset 0 is a checked, known value and prints as a printed page.
+    assert main(["--root", root, "edit", "rm-test", "--page-offset", "0"]) == 0
+    assert main(["--root", root, "search", "fifo"]) == 0
+    assert "rm-test Rev 2  p. 1" in capsys.readouterr().out
+
     assert main(["--root", root, "verify"]) == 0
     # An uncatalogued PDF is an orphan.
     shutil.copy(sample_pdf, shelf_root / "stray.pdf")
@@ -81,3 +86,12 @@ def test_cli_end_to_end(shelf_root: Path, sample_pdf: Path, capsys: pytest.Captu
 
     # Re-adding identical content under a new id is refused.
     assert main(["--root", root, "add", str(shelf_root / "stray.pdf"), "--id", "dup", "--type", "datasheet"]) == 1
+
+    # Ingest sees the stray copy as a duplicate, not a new document, and an
+    # unchecked offset (ingested docs start as null) prints "pdf p.".
+    assert main(["--root", root, "ingest", "--apply"]) == 0
+    assert "duplicates (1)" in capsys.readouterr().out
+    (shelf_root / "stray.pdf").write_bytes(make_pdf(["Different content, FIFO too"]))
+    assert main(["--root", root, "ingest", "--apply"]) == 0
+    assert main(["--root", root, "search", "--doc", "stray", "fifo"]) == 0
+    assert "stray  pdf p. 1" in capsys.readouterr().out

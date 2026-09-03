@@ -148,7 +148,8 @@ def cmd_show(args: argparse.Namespace) -> int:
     print(f"  parts:       {', '.join(d.parts)}")
     print(f"  revision:    {d.revision}")
     print(f"  file:        {d.file}  ({'present' if on_disk else 'MISSING'})")
-    print(f"  pages:       {d.pages}  (printed = pdf − {d.page_offset})")
+    offset = f"printed = pdf − {d.page_offset}" if d.offset_known else "page offset not yet checked"
+    print(f"  pages:       {d.pages}  ({offset})")
     print(f"  text layer:  {d.text_layer}")
     print(f"  sha256:      {d.sha256}")
     if d.source_url:
@@ -182,7 +183,7 @@ def cmd_search(args: argparse.Namespace) -> int:
     for h in hits:
         doc = manifest.get(h.doc_id)
         rev = f" {doc.revision}" if doc.revision != "unknown" else ""
-        loc = f"p. {h.printed_page}" if doc.page_offset else f"pdf p. {h.pdf_page}"
+        loc = f"p. {h.printed_page}" if doc.offset_known else f"pdf p. {h.pdf_page}"
         print(f"{h.doc_id}{rev}  {loc}")
         print(f"    {h.snippet}")
     return 0
@@ -352,7 +353,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--revision", help="document revision from the cover, e.g. 'Rev 8'")
     s.add_argument("--notes")
     s.add_argument("--source", help="where it came from (URL)")
-    s.add_argument("--page-offset", type=int, default=0, help="printed page = pdf page − offset")
+    s.add_argument("--page-offset", type=int, default=None,
+                   help="printed page = pdf page − offset (0 if they match; omit if unchecked)")
     s.add_argument("--filename", help="name to store under the root (default: original name)")
     s.add_argument("--move", action="store_true", help="move instead of copy")
     s.set_defaults(func=cmd_add)

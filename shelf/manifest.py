@@ -50,8 +50,9 @@ class Document:
     revision: str = "unknown"
     pages: int = 0
     sha256: str = ""
-    # printed page = pdf page index (1-based) - page_offset
-    page_offset: int = 0
+    # printed page = pdf page index (1-based) - page_offset.
+    # None means nobody has checked yet; 0 means checked and equal.
+    page_offset: int | None = None
     text_layer: str = "unknown"
     toc: list[TocEntry] = field(default_factory=list)
     notes: str = ""
@@ -65,7 +66,11 @@ class Document:
             raise ShelfError(f"{self.id}: text_layer must be one of {', '.join(TEXT_LAYERS)}")
 
     def printed_page(self, pdf_page: int) -> int:
-        return pdf_page - self.page_offset
+        return pdf_page - (self.page_offset or 0)
+
+    @property
+    def offset_known(self) -> bool:
+        return self.page_offset is not None
 
     def covers(self, part: str) -> bool:
         needle = part.lower()

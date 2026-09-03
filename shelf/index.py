@@ -155,8 +155,8 @@ class Index:
             raise ShelfError(f"search failed: {e} (query was {fts_query!r})") from None
         hits = []
         for did, pdf_page, snip, rank in rows:
-            offset = manifest.get(did).page_offset if manifest.has(did) else 0
-            hits.append(Hit(did, pdf_page, pdf_page - offset, " ".join(snip.split()), rank))
+            printed = manifest.get(did).printed_page(pdf_page) if manifest.has(did) else pdf_page
+            hits.append(Hit(did, pdf_page, printed, " ".join(snip.split()), rank))
         return hits
 
     def indexed_ids(self) -> list[str]:
