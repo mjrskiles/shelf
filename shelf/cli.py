@@ -17,6 +17,8 @@ from shelf.config import (
     manifest_path,
 )
 from shelf.index import Index
+from shelf.ingest import apply as ingest_apply
+from shelf.ingest import scan as ingest_scan
 from shelf.manifest import DOC_TYPES, Document, Manifest, Wanted
 from shelf.pdf import extract_pages, pdf_info, sha256_file, text_layer_quality
 
@@ -261,6 +263,48 @@ def cmd_edit(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ingest(args: argparse.Namespace) -> int:
+    root, manifest = _load(args)
+    paths = [Path(p).expanduser().resolve() for p in args.paths] if args.paths else None
+    for p in paths or []:
+        if not p.exists():
+            raise ShelfError(f"no such path: {p}")
+        if not p.is_relative_to(root):
+            raise ShelfError(f"{p} is outside the shelf root {root}; `shelf add` copies external files in")
+
+    plan = ingest_scan(root, manifest, paths)
+    if plan.is_empty():
+        print("nothing to ingest — every PDF under the root is catalogued")
+        return 0
+
+    if plan.relocated:
+        print(f"relocated ({len(plan.relocated)}) — path fixed by content hash:")
+        for doc, rel in plan.relocated:
+            print(f"  {doc.id:<24} {doc.file}  →  {rel}")
+    if plan.duplicates:
+        print(f"duplicates ({len(plan.duplicates)}) — same content already catalogued, left in place:")
+        for rel, dup_of in plan.duplicates:
+            print(f"  {rel}  ==  {dup_of}")
+    if plan.new:
+        print(f"new ({len(plan.new)}) — guessed metadata, revision unknown:")
+        rows = [[c.id, c.type, ", ".join(c.parts), str(c.pages), c.file] for c in plan.new]
+        print(_table(rows, ["id", "type", "parts", "pages", "file"]))
+
+    if not args.apply:
+        print("\ndry run — re-run with --apply to catalog and index these")
+        return 0
+
+    idx = _open_index(root)
+    try:
+        ingest_apply(plan, manifest, root, idx)
+    finally:
+        idx.close()
+    manifest.save(manifest_path(root))
+    print(f"\ncatalogued {len(plan.new)} new, repaired {len(plan.relocated)} path(s); "
+          f"run `shelf verify` and `shelf edit <id> --revision ...` to confirm metadata")
+    return 0
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     root, manifest = _load(args)
     problems = 0
@@ -353,6 +397,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--page-offset", type=int)
     s.add_argument("--source")
     s.set_defaults(func=cmd_edit)
+
+    s = sub.add_parser("ingest", help="find uncatalogued PDFs under the root, detect moves/duplicates, guess metadata")
+    s.add_argument("paths", nargs="*", help="directories or files under the root to scan (default: whole root)")
+    s.add_argument("--apply", action="store_true", help="catalog and index the new documents (default: dry run)")
+    s.set_defaults(func=cmd_ingest)
 
     s = sub.add_parser("verify", help="check files exist, hashes match, and no PDFs are uncatalogued")
     s.set_defaults(func=cmd_verify)

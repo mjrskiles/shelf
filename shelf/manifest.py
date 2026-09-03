@@ -25,6 +25,7 @@ DOC_TYPES = (
     "schematic",
     "user-manual",
     "standard",
+    "paper",
     "other",
 )
 

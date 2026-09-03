@@ -70,7 +70,24 @@ shelf edit rm0433 --page-offset 0 --revision "Rev 8"
 shelf wanted add es0392 --title "ES0392 errata" --why "check §2.2.10"
 shelf index                                    # rebuild after editing PDFs or the manifest
 shelf verify                                   # missing files, changed hashes, uncatalogued PDFs
+shelf ingest                                   # dry run: uncatalogued PDFs, moved files, duplicates
+shelf ingest --apply                           # catalog them with guessed metadata (revision unknown)
 ```
+
+### Ingesting a pile of PDFs
+
+`shelf ingest` walks the root (or the paths you give it), hashes every PDF,
+and sorts them into three buckets: **relocated** (content matches a
+catalogued document whose file went missing — the path is repaired),
+**duplicate** (same content as something already catalogued — reported,
+left alone), and **new**. For new files it guesses an id (vendor document
+numbers like `rm0433` or `es0392` win; otherwise a slug of the filename),
+a type (from filename, PDF title, and directory names like `papers/`), and
+part numbers (conservatively). Everything it adds is marked `revision:
+unknown` with an "ingested — verify" note, so `shelf verify` keeps nagging
+until you've confirmed the metadata with `shelf edit`.
+
+A new file whose guessed id matches a `wanted` entry fulfils it.
 
 `shelf` finds its root by walking up from the working directory to the
 nearest `shelf.json`; `--root` or `SHELF_ROOT` override that.
@@ -94,8 +111,8 @@ other.
 - **remote sync** — `shelf sync` via rclone (SFTP today, S3-compatible
   storage later) so the PDFs live in one private place and the manifest in
   git.
-- **ingest** — walk directories of scattered PDFs, hash, dedupe, read
-  metadata, and queue unknowns for triage.
+- **ingest from outside the root** — today `ingest` scans under the root;
+  pointing it at `~/Downloads` and having it copy files in is the next step.
 - **toc** — populate `toc` from a document's own contents pages so lookups
   jump instead of searching.
 - **export** — a static HTML catalog page.
