@@ -11,6 +11,7 @@ from pathlib import Path
 
 from shelf import ShelfError, __version__
 from shelf import inspect as inspection
+from shelf import toc as toc_mod
 from shelf.config import (
     MANIFEST_NAME,
     db_path,
@@ -162,11 +163,13 @@ def cmd_show(args: argparse.Namespace) -> int:
     if d.notes:
         print(f"  notes:       {d.notes}")
     if d.toc:
-        print(f"  toc:         {len(d.toc)} entries")
+        print(f"  toc:         {len(d.toc)} entries (`shelf toc {d.id}`)")
         for t in d.toc[: args.toc_lines]:
             print(f"    {t.section:<10} p.{t.page:<6} {t.title}")
         if len(d.toc) > args.toc_lines:
             print(f"    … {len(d.toc) - args.toc_lines} more (--toc-lines N)")
+    else:
+        print(f"  toc:         none (`shelf toc {d.id} --build`)")
     return 0
 
 
@@ -187,7 +190,9 @@ def cmd_search(args: argparse.Namespace) -> int:
         doc = manifest.get(h.doc_id)
         rev = f" {doc.revision}" if doc.revision != "unknown" else ""
         loc = f"p. {h.printed_page}" if doc.offset_known else f"pdf p. {h.pdf_page}"
-        print(f"{h.doc_id}{rev}  {loc}")
+        sec = doc.enclosing_section(h.pdf_page)
+        where = f"  §{sec.section} {sec.title}" if sec and sec.section else ""
+        print(f"{h.doc_id}{rev}  {loc}{where}")
         print(f"    {h.snippet}")
     return 0
 
@@ -230,9 +235,30 @@ def _cite(doc: Document, pdf_page: int) -> str:
     return f"{doc.id}{rev}, pdf p. {pdf_page} (printed page offset unknown)"
 
 
+_SECTION_REF = re.compile(r"^§?\s*([A-Z]?\d+(?:\.\d+)+|[A-Z](?:\.\d+)+|§\d+)$")
+
+
 def cmd_read(args: argparse.Namespace) -> int:
     root, manifest = _load(args)
     doc = manifest.get(args.id)
+
+    # "§51.4.8" / "51.4.8" / "A.2": read a whole section via the TOC.
+    if args.pages.startswith("§") or (_SECTION_REF.match(args.pages) and "-" not in args.pages and "," not in args.pages
+                                      and "." in args.pages):
+        if not doc.toc:
+            raise ShelfError(f"{doc.id} has no table of contents — run `shelf toc {doc.id} --build`")
+        entry = doc.section(args.pages)
+        if entry is None:
+            raise ShelfError(f"no section {args.pages.lstrip('§')} in {doc.id}'s TOC (try `shelf toc {doc.id} --grep …`)")
+        first, last = doc.section_span(entry)
+        if last - first + 1 > 25 and not args.all:
+            last = first + 24
+            print(f"note: §{entry.section} spans more than 25 pages; showing the first 25 (--all for everything)",
+                  file=sys.stderr)
+        pdf_pages = list(range(first, last + 1))
+        print(f"§{entry.section} {entry.title}")
+        return _print_pages(root, doc, pdf_pages)
+
     requested = _parse_pages(args.pages)
     if args.pdf or not doc.offset_known:
         pdf_pages = requested
@@ -246,7 +272,10 @@ def cmd_read(args: argparse.Namespace) -> int:
         raise ShelfError(f"pages out of range for {doc.id} (1–{doc.pages} pdf): {bad}")
     if len(pdf_pages) > 25 and not args.all:
         raise ShelfError(f"{len(pdf_pages)} pages requested; pass --all if you mean it")
+    return _print_pages(root, doc, pdf_pages)
 
+
+def _print_pages(root: Path, doc: Document, pdf_pages: list[int]) -> int:
     idx = _open_index(root)
     try:
         text_by_page = dict(idx.pages_for(doc.id))
@@ -255,9 +284,52 @@ def cmd_read(args: argparse.Namespace) -> int:
     if not text_by_page:
         raise ShelfError(f"{doc.id} is not indexed — run `shelf index`")
     for p in pdf_pages:
-        print(f"── {_cite(doc, p)} ──")
+        sec = doc.enclosing_section(p)
+        where = f"  §{sec.section} {sec.title}" if sec and sec.section else (f"  {sec.title}" if sec else "")
+        print(f"── {_cite(doc, p)}{where} ──")
         print(text_by_page.get(p, "").rstrip("\n"))
         print()
+    return 0
+
+
+def cmd_toc(args: argparse.Namespace) -> int:
+    root, manifest = _load(args)
+    doc = manifest.get(args.id)
+    if args.build:
+        pdf = root / doc.file
+        if not pdf.is_file():
+            raise ShelfError(f"{doc.file} is not on disk")
+        items = toc_mod.extract_outline(pdf)
+        if not items:
+            print(f"{doc.id}: the PDF has no outline (bookmarks) — nothing to build")
+            return 1
+        if not doc.offset_known:
+            print(f"note: page offset for {doc.id} is unknown; TOC printed pages assume offset 0 "
+                  f"(run `shelf inspect` or `shelf edit --page-offset`, then rebuild)", file=sys.stderr)
+        doc.toc = toc_mod.build_toc(doc, items, include_tables=args.tables, max_level=args.depth)
+        manifest.save(manifest_path(root))
+        print(f"{doc.id}: {len(doc.toc)} entries from {len(items)} outline items"
+              + ("" if args.tables else " (tables/figures skipped; --tables to keep)"))
+        return 0
+
+    if not doc.toc:
+        print(f"{doc.id}: no TOC yet — `shelf toc {doc.id} --build`")
+        return 1
+    pattern = re.compile(args.grep, re.I) if args.grep else None
+    shown = 0
+    for t in doc.toc:
+        if args.depth is not None and t.level > args.depth:
+            continue
+        if pattern and not (pattern.search(t.title) or pattern.search(t.section)):
+            continue
+        indent = "  " * (t.level - 1)
+        sec = f"§{t.section}" if t.section else ""
+        loc = f"p. {t.page}" if doc.offset_known else f"pdf p. {t.pdf_page}"
+        print(f"{indent}{sec:<12} {loc:<10} {t.title}")
+        shown += 1
+    if shown == 0:
+        print("no matching entries")
+        return 1
     return 0
 
 
@@ -523,9 +595,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--raw", action="store_true", help="pass the query to FTS5 unmodified (phrases, NEAR, OR, prefix*)")
     s.set_defaults(func=cmd_search)
 
+    s = sub.add_parser("toc", help="show a document's table of contents, or --build it from the PDF outline")
+    s.add_argument("id")
+    s.add_argument("--build", action="store_true", help="extract the PDF outline into the manifest")
+    s.add_argument("--tables", action="store_true", help="when building, keep Table/Figure entries")
+    s.add_argument("--depth", type=int, help="max nesting level to build or show")
+    s.add_argument("--grep", help="show only entries whose title or number matches (regex, case-insensitive)")
+    s.set_defaults(func=cmd_toc)
+
     s = sub.add_parser("read", help="print pages of a document with a citation header")
     s.add_argument("id")
-    s.add_argument("pages", help="printed page numbers: N, N-M, N,M-K (PDF indices if offset unknown or --pdf)")
+    s.add_argument("pages", help="printed pages N, N-M, N,M-K (PDF indices if offset unknown or --pdf); or a section §51.4.8")
     s.add_argument("--pdf", action="store_true", help="treat numbers as PDF page indices")
     s.add_argument("--all", action="store_true", help="allow more than 25 pages")
     s.set_defaults(func=cmd_read)

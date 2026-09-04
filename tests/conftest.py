@@ -8,8 +8,12 @@ from pathlib import Path
 import pytest
 
 
-def make_pdf(pages: list[str]) -> bytes:
-    """Build a minimal, valid PDF with one line of Helvetica text per page.
+Outline = list[tuple[str, int, "Outline"]]  # (title, 1-based page, children)
+
+
+def make_pdf(pages: list[str], outline: Outline | None = None) -> bytes:
+    """Build a minimal, valid PDF with one line of Helvetica text per page and
+    an optional bookmark outline.
 
     The xref table is computed properly so poppler does not have to
     reconstruct it.
@@ -19,6 +23,13 @@ def make_pdf(pages: list[str]) -> bytes:
     def add(body: str) -> int:
         objects.append(body.encode("latin-1"))
         return len(objects)
+
+    def reserve() -> int:
+        objects.append(b"")
+        return len(objects)
+
+    def set_obj(num: int, body: str) -> None:
+        objects[num - 1] = body.encode("latin-1")
 
     font = add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
     page_ids: list[int] = []
@@ -35,7 +46,32 @@ def make_pdf(pages: list[str]) -> bytes:
     kids = " ".join(f"{p} 0 R" for p in page_ids)
     actual_pages_id = add(f"<< /Type /Pages /Kids [{kids}] /Count {len(pages)} >>")
     assert actual_pages_id == pages_id
-    catalog = add(f"<< /Type /Catalog /Pages {pages_id} 0 R >>")
+
+    outlines_ref = ""
+    if outline:
+        outlines_id = reserve()
+
+        def emit(items: Outline, parent: int) -> tuple[int, int, int]:
+            ids = [reserve() for _ in items]
+            for i, (title, page, children) in enumerate(items):
+                safe = title.replace("(", "\\(").replace(")", "\\)")
+                parts = [f"/Title ({safe})", f"/Parent {parent} 0 R",
+                         f"/Dest [{page_ids[page - 1]} 0 R /XYZ null null null]"]
+                if i > 0:
+                    parts.append(f"/Prev {ids[i - 1]} 0 R")
+                if i + 1 < len(ids):
+                    parts.append(f"/Next {ids[i + 1]} 0 R")
+                if children:
+                    first, last, count = emit(children, ids[i])
+                    parts += [f"/First {first} 0 R", f"/Last {last} 0 R", f"/Count {count}"]
+                set_obj(ids[i], "<< " + " ".join(parts) + " >>")
+            return ids[0], ids[-1], len(ids)
+
+        first, last, count = emit(outline, outlines_id)
+        set_obj(outlines_id, f"<< /Type /Outlines /First {first} 0 R /Last {last} 0 R /Count {count} >>")
+        outlines_ref = f" /Outlines {outlines_id} 0 R /PageMode /UseOutlines"
+
+    catalog = add(f"<< /Type /Catalog /Pages {pages_id} 0 R{outlines_ref} >>")
 
     out = bytearray(b"%PDF-1.4\n")
     offsets = []

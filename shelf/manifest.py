@@ -34,9 +34,11 @@ TEXT_LAYERS = ("good", "partial", "poor", "unknown")
 
 @dataclass
 class TocEntry:
-    section: str
+    section: str  # "51.4.8", "A.2", or "" for unnumbered headings
     title: str
     page: int  # printed page number
+    pdf_page: int = 0  # 1-based PDF index; 0 if unknown
+    level: int = 1  # nesting depth in the document's outline
 
 
 @dataclass
@@ -78,6 +80,39 @@ class Document:
     def covers(self, part: str) -> bool:
         needle = part.lower()
         return any(needle in p.lower() for p in self.parts)
+
+    def section(self, ref: str) -> TocEntry | None:
+        """Find a TOC entry by section number ("51.4.8", "§51.4.8", "A.2")."""
+        key = ref.lstrip("§").strip().rstrip(".")
+        for t in self.toc:
+            if t.section == key:
+                return t
+        return None
+
+    def enclosing_section(self, pdf_page: int) -> TocEntry | None:
+        """The last TOC entry that starts at or before ``pdf_page``."""
+        best: TocEntry | None = None
+        for t in self.toc:
+            if t.pdf_page and t.pdf_page <= pdf_page:
+                best = t
+            elif t.pdf_page > pdf_page:
+                break
+        return best
+
+    def section_span(self, entry: TocEntry) -> tuple[int, int]:
+        """PDF page range [first, last] a section occupies: from its own page
+        to the page before the next entry of the same or shallower level."""
+        first = entry.pdf_page
+        last = self.pages
+        seen = False
+        for t in self.toc:
+            if t is entry:
+                seen = True
+                continue
+            if seen and t.pdf_page > first and t.level <= entry.level:
+                last = t.pdf_page - 1 if t.pdf_page > first else first
+                break
+        return first, max(first, last)
 
 
 @dataclass

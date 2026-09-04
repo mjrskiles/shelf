@@ -67,6 +67,9 @@ shelf search fifo depth --part stm32h7         # tokens are ANDed as phrases
 shelf search --raw 'FIFOEN OR RXFTIE'          # raw FTS5 syntax when you want it
 shelf grep 'ADCSEL\[1:0\]' --doc rm0433        # regex, for what FTS tokenizes away
 shelf read rm0433 2248-2249                    # page text with a citation header
+shelf toc rm0433 --build                       # table of contents from the PDF outline
+shelf toc rm0433 --grep 'clock generator'      # find a section by title
+shelf read rm0433 §51.4.8                      # read a whole section
 shelf inspect --apply                          # guess page offsets + revisions, marked `auto`
 shelf show rm0433
 shelf edit rm0433 --page-offset 0 --revision "Rev 8"
@@ -104,6 +107,18 @@ regex over the same stored page text, for the things FTS tokenizes away:
 (`rm0433 Rev 8, p. 2248 (pdf p. 2248)`). None of the three touch the PDF
 again — they read the index, so they work at the speed of SQLite.
 
+### toc — sections, not just pages
+
+`shelf toc <id> --build` reads the PDF's bookmark outline (via `pdftohtml`,
+no page rendering — a 3000-page manual takes under a second) into the
+manifest as `{section, title, page, pdf_page, level}` entries, splitting
+"51.4.8 SAI clock generator" into number and title and skipping Table/Figure
+bookmarks unless `--tables`. Then `shelf toc <id>` lists it (`--depth`,
+`--grep`), `shelf read <id> §51.4.8` prints the whole section, and `search`
+and `read` label every page with its enclosing section. PDFs without
+bookmarks get an honest "no outline" — most reference manuals have one, many
+short datasheets don't.
+
 ### inspect — let the documents describe themselves
 
 `shelf inspect` samples the middle of each document for running page
@@ -136,8 +151,8 @@ still marked `auto`.
   git.
 - **ingest from outside the root** — today `ingest` scans under the root;
   pointing it at `~/Downloads` and having it copy files in is the next step.
-- **toc** — populate `toc` from a document's own contents pages so lookups
-  jump instead of searching.
+- **toc from contents pages** — for PDFs with no bookmark outline, parse
+  the printed contents pages instead.
 - **export** — a static HTML catalog page.
 
 ## License
