@@ -58,6 +58,9 @@ class Document:
     notes: str = ""
     source_url: str = ""
     added: str = ""
+    # Fields whose values were guessed by `shelf inspect` and not yet
+    # confirmed by a human, e.g. ["revision", "page_offset"].
+    auto: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.type not in DOC_TYPES:

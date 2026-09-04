@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import sys
 from datetime import date
 from pathlib import Path
 
 from shelf import ShelfError, __version__
+from shelf import inspect as inspection
 from shelf.config import (
     MANIFEST_NAME,
     db_path,
@@ -146,7 +148,8 @@ def cmd_show(args: argparse.Namespace) -> int:
     print(f"{d.id}  [{d.type}]  {d.title}")
     print(f"  vendor:      {d.vendor}")
     print(f"  parts:       {', '.join(d.parts)}")
-    print(f"  revision:    {d.revision}")
+    auto = f"  (auto-detected: {', '.join(d.auto)})" if d.auto else ""
+    print(f"  revision:    {d.revision}{auto}")
     print(f"  file:        {d.file}  ({'present' if on_disk else 'MISSING'})")
     offset = f"printed = pdf − {d.page_offset}" if d.offset_known else "page offset not yet checked"
     print(f"  pages:       {d.pages}  ({offset})")
@@ -198,6 +201,146 @@ def idx_has_docs(root: Path) -> bool:
         return bool(idx.indexed_ids())
     finally:
         idx.close()
+
+
+def _parse_pages(spec: str) -> list[int]:
+    """'12', '12-15', '12,14-16' → sorted unique page numbers."""
+    pages: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        m = re.fullmatch(r"(\d+)(?:-(\d+))?", part)
+        if not m:
+            raise ShelfError(f"bad page spec {part!r}; use N, N-M, or N,M-K")
+        a = int(m.group(1))
+        b = int(m.group(2)) if m.group(2) else a
+        if b < a:
+            a, b = b, a
+        pages.update(range(a, b + 1))
+    if not pages:
+        raise ShelfError("empty page spec")
+    return sorted(pages)
+
+
+def _cite(doc: Document, pdf_page: int) -> str:
+    rev = f" {doc.revision}" if doc.revision != "unknown" else ""
+    if doc.offset_known:
+        return f"{doc.id}{rev}, p. {doc.printed_page(pdf_page)} (pdf p. {pdf_page})"
+    return f"{doc.id}{rev}, pdf p. {pdf_page} (printed page offset unknown)"
+
+
+def cmd_read(args: argparse.Namespace) -> int:
+    root, manifest = _load(args)
+    doc = manifest.get(args.id)
+    requested = _parse_pages(args.pages)
+    if args.pdf or not doc.offset_known:
+        pdf_pages = requested
+        if not args.pdf:
+            print(f"note: page offset for {doc.id} is unknown — treating numbers as PDF pages "
+                  f"(run `shelf inspect` or `shelf edit --page-offset`)", file=sys.stderr)
+    else:
+        pdf_pages = [p + (doc.page_offset or 0) for p in requested]
+    bad = [p for p in pdf_pages if p < 1 or p > doc.pages]
+    if bad:
+        raise ShelfError(f"pages out of range for {doc.id} (1–{doc.pages} pdf): {bad}")
+    if len(pdf_pages) > 25 and not args.all:
+        raise ShelfError(f"{len(pdf_pages)} pages requested; pass --all if you mean it")
+
+    idx = _open_index(root)
+    try:
+        text_by_page = dict(idx.pages_for(doc.id))
+    finally:
+        idx.close()
+    if not text_by_page:
+        raise ShelfError(f"{doc.id} is not indexed — run `shelf index`")
+    for p in pdf_pages:
+        print(f"── {_cite(doc, p)} ──")
+        print(text_by_page.get(p, "").rstrip("\n"))
+        print()
+    return 0
+
+
+def cmd_grep(args: argparse.Namespace) -> int:
+    root, manifest = _load(args)
+    if args.doc:
+        manifest.get(args.doc)  # validate
+    try:
+        pattern = re.compile(args.pattern, re.I if args.ignore_case else 0)
+    except re.error as e:
+        raise ShelfError(f"bad regex: {e}") from None
+
+    idx = _open_index(root)
+    try:
+        hits = list(idx.grep(pattern, doc_id=args.doc, part=args.part))
+    finally:
+        idx.close()
+    if not hits:
+        print("no matches")
+        return 1
+    shown = 0
+    for did, pdf_page, text in hits:
+        if shown >= args.limit:
+            print(f"… {len(hits) - shown} more matching page(s); raise -n to see them")
+            break
+        doc = manifest.get(did)
+        print(f"── {_cite(doc, pdf_page)} ──")
+        lines = text.splitlines()
+        match_idx = [i for i, ln in enumerate(lines) if pattern.search(ln)]
+        shown_lines: set[int] = set()
+        for i in match_idx:
+            for j in range(max(0, i - args.context), min(len(lines), i + args.context + 1)):
+                shown_lines.add(j)
+        last = -2
+        for j in sorted(shown_lines):
+            if j != last + 1 and last >= 0:
+                print("   …")
+            marker = ">" if j in match_idx else " "
+            print(f"{marker} {lines[j].rstrip()}")
+            last = j
+        print()
+        shown += 1
+    return 0
+
+
+def cmd_inspect(args: argparse.Namespace) -> int:
+    root, manifest = _load(args)
+    targets = [manifest.get(i) for i in args.ids] if args.ids else list(manifest.documents)
+    idx = _open_index(root)
+    try:
+        indexed = set(idx.indexed_ids())
+        rows: list[list[str]] = []
+        changed_docs = 0
+        for doc in targets:
+            if doc.id not in indexed:
+                rows.append([doc.id, "—", "—", "not indexed"])
+                continue
+            result = inspection.inspect(doc, idx.pages_for(doc.id))
+            off = "?" if result.offset is None else f"{result.offset.value} (pp. {result.offset.evidence[0]}…{result.offset.evidence[-1]}, {len(result.offset.evidence)} agree)"
+            rev = "?" if result.revision is None else f"{result.revision.value}" + (f" (pdf p. {result.revision.evidence[0]})" if result.revision.evidence else " (title)")
+            status = ""
+            if args.apply:
+                changed = inspection.apply(doc, result, force=args.force)
+                status = "set " + ", ".join(changed) if changed else "unchanged"
+                changed_docs += bool(changed)
+            else:
+                pending = []
+                if result.offset is not None and (args.force or doc.page_offset is None):
+                    pending.append("page_offset")
+                if result.revision is not None and (args.force or doc.revision == "unknown"):
+                    pending.append("revision")
+                status = "would set " + ", ".join(pending) if pending else "nothing to do"
+            rows.append([doc.id, off, rev, status])
+    finally:
+        idx.close()
+    print(_table(rows, ["id", "page offset", "revision", "action"]))
+    if args.apply:
+        manifest.save(manifest_path(root))
+        print(f"\nupdated {changed_docs} document(s); guessed fields are marked `auto` — "
+              f"confirm with `shelf edit` (clears the marker)")
+    else:
+        print("\ndry run — re-run with --apply to write the guesses")
+    return 0
 
 
 def cmd_index(args: argparse.Namespace) -> int:
@@ -257,6 +400,8 @@ def cmd_edit(args: argparse.Namespace) -> int:
         changed.append("source_url")
     if not changed:
         raise ShelfError("nothing to change")
+    # A human-set value is no longer a guess.
+    d.auto = [a for a in d.auto if a not in changed]
     # Re-run validation on the mutated dataclass.
     Document(**{k: v for k, v in d.__dict__.items()})
     manifest.save(manifest_path(root))
@@ -322,6 +467,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
             problems += 1
         if d.revision == "unknown":
             print(f"REVISION {d.id}: unknown — check the cover")
+        if d.auto:
+            print(f"AUTO     {d.id}: {', '.join(d.auto)} guessed by `shelf inspect` — confirm with `shelf edit`")
     for pdf in sorted(root.rglob("*.pdf")):
         if pdf.resolve() not in catalogued and ".shelf" not in pdf.parts:
             print(f"ORPHAN   {pdf.relative_to(root)} is not in the manifest")
@@ -375,6 +522,28 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("-n", "--limit", type=int, default=20)
     s.add_argument("--raw", action="store_true", help="pass the query to FTS5 unmodified (phrases, NEAR, OR, prefix*)")
     s.set_defaults(func=cmd_search)
+
+    s = sub.add_parser("read", help="print pages of a document with a citation header")
+    s.add_argument("id")
+    s.add_argument("pages", help="printed page numbers: N, N-M, N,M-K (PDF indices if offset unknown or --pdf)")
+    s.add_argument("--pdf", action="store_true", help="treat numbers as PDF page indices")
+    s.add_argument("--all", action="store_true", help="allow more than 25 pages")
+    s.set_defaults(func=cmd_read)
+
+    s = sub.add_parser("grep", help="regex over page text — for symbols FTS tokenizes away (ADCSEL[1:0], 2.2.21, 0x81A)")
+    s.add_argument("pattern")
+    s.add_argument("--doc", help="restrict to one document id")
+    s.add_argument("--part", help="restrict to documents covering this part number (substring)")
+    s.add_argument("-i", "--ignore-case", action="store_true")
+    s.add_argument("-C", "--context", type=int, default=1, help="lines of context around each match (default 1)")
+    s.add_argument("-n", "--limit", type=int, default=50, help="max matching pages to show")
+    s.set_defaults(func=cmd_grep)
+
+    s = sub.add_parser("inspect", help="guess page offsets (from running page numbers) and revisions (from covers)")
+    s.add_argument("ids", nargs="*", help="document ids (default: all)")
+    s.add_argument("--apply", action="store_true", help="write guesses for unknown fields (marked `auto`)")
+    s.add_argument("--force", action="store_true", help="overwrite known values too")
+    s.set_defaults(func=cmd_inspect)
 
     s = sub.add_parser("index", help="(re)build the full-text index from the manifest and PDFs")
     s.add_argument("--force", action="store_true", help="re-extract even if unchanged")

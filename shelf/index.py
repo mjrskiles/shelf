@@ -6,10 +6,11 @@ truth for anything.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 from shelf import ShelfError
 from shelf.manifest import Document, Manifest
@@ -161,6 +162,40 @@ class Index:
 
     def indexed_ids(self) -> list[str]:
         return [r[0] for r in self._conn.execute("SELECT id FROM docs ORDER BY id").fetchall()]
+
+    def pages_for(self, doc_id: str) -> list[tuple[int, str]]:
+        """All indexed pages of one document as (pdf_page, text), in order."""
+        rows = self._conn.execute(
+            "SELECT pdf_page, text FROM pages WHERE doc_id = ? ORDER BY pdf_page", (doc_id,)
+        ).fetchall()
+        return [(int(p), t) for p, t in rows]
+
+    def grep(
+        self,
+        pattern: "re.Pattern[str]",
+        doc_id: str | None = None,
+        part: str | None = None,
+    ) -> Iterator[tuple[str, int, str]]:
+        """Yield (doc_id, pdf_page, text) for every page whose text matches.
+
+        Regex over the stored page text — for the symbols FTS tokenizes away:
+        `ADCSEL[1:0]`, `2.2.21`, `0x81A`, `§51.4.8`.
+        """
+        sql = "SELECT doc_id, pdf_page, text FROM pages"
+        conds: list[str] = []
+        params: list[object] = []
+        if doc_id:
+            conds.append("doc_id = ?")
+            params.append(doc_id)
+        if part:
+            conds.append("doc_id IN (SELECT doc_id FROM doc_parts WHERE part LIKE ?)")
+            params.append(f"%{part.lower()}%")
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY doc_id, pdf_page"
+        for did, pg, text in self._conn.execute(sql, params):
+            if pattern.search(text):
+                yield did, int(pg), text
 
 
 def _phrase_query(query: str) -> str:

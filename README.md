@@ -65,6 +65,9 @@ shelf add ~/Downloads/rm0433.pdf --id rm0433 --type reference-manual \
       --source https://www.st.com/...          # copies the PDF in, hashes, indexes
 shelf search fifo depth --part stm32h7         # tokens are ANDed as phrases
 shelf search --raw 'FIFOEN OR RXFTIE'          # raw FTS5 syntax when you want it
+shelf grep 'ADCSEL\[1:0\]' --doc rm0433        # regex, for what FTS tokenizes away
+shelf read rm0433 2248-2249                    # page text with a citation header
+shelf inspect --apply                          # guess page offsets + revisions, marked `auto`
 shelf show rm0433
 shelf edit rm0433 --page-offset 0 --revision "Rev 8"
 shelf wanted add es0392 --title "ES0392 errata" --why "check §2.2.10"
@@ -92,6 +95,25 @@ A new file whose guessed id matches a `wanted` entry fulfils it.
 `shelf` finds its root by walking up from the working directory to the
 nearest `shelf.json`; `--root` or `SHELF_ROOT` override that.
 
+### search vs grep vs read
+
+`search` is FTS5 — fast, ranked, good for words and phrases. `grep` is a
+regex over the same stored page text, for the things FTS tokenizes away:
+`ADCSEL[1:0]`, `2.2.21`, `0x81A`, `§51.4.8`. Both return page numbers;
+`read` prints the pages themselves, each under a copy-ready citation line
+(`rm0433 Rev 8, p. 2248 (pdf p. 2248)`). None of the three touch the PDF
+again — they read the index, so they work at the speed of SQLite.
+
+### inspect — let the documents describe themselves
+
+`shelf inspect` samples the middle of each document for running page
+numbers (`2081/3353`, `page 13/73`) and solves for the printed-page offset,
+and scans the title and cover for a revision (`Rev 8`, `Rev. B`, `v1.0.5`).
+It only believes an offset when several pages agree. `--apply` writes the
+guesses for fields that are still unknown and records them in the document's
+`auto` list; `shelf verify` keeps flagging those until `shelf edit` confirms
+them, which clears the marker. `--force` re-guesses known values too.
+
 ### Printed pages vs PDF pages
 
 Manuals number their pages from the first body page, so PDF page 20 might be
@@ -104,7 +126,8 @@ other.
 
 `<id> <revision> §<section>, p. <printed page>` — e.g.
 `RM0433 Rev 8 §51.5.8, p. 2048`. Document revision is part of the fact;
-`shelf verify` nags about documents whose revision is still `unknown`.
+`shelf verify` nags about documents whose revision is still `unknown` or
+still marked `auto`.
 
 ## Roadmap
 
