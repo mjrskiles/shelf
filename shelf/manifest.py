@@ -215,10 +215,22 @@ class Manifest:
         m._check_unique()
         return m
 
+    # Bibliography belongs to papers. Writing `"venue": ""` onto ninety
+    # datasheets is noise in the one file a human is meant to read and edit,
+    # so these are omitted when unset; `Document`'s defaults restore them.
+    _PAPER_FIELDS = {"authors": [], "year": 0, "venue": "", "doi": ""}
+
     def to_dict(self) -> dict[str, Any]:
+        docs = []
+        for d in self.documents:
+            raw = asdict(d)
+            for name, empty in self._PAPER_FIELDS.items():
+                if raw[name] == empty:
+                    del raw[name]
+            docs.append(raw)
         return {
             "version": self.version,
-            "documents": [asdict(d) for d in self.documents],
+            "documents": docs,
             "wanted": [asdict(w) for w in self.wanted],
         }
 

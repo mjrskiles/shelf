@@ -101,3 +101,28 @@ def test_initialless_byline_is_skipped_rather_than_guessed() -> None:
     # title, so it is left for a human instead of being invented.
     b = detect_biblio([(1, "PAPERS\n\nMP3 and AAC Explained\n\nKARLHEINZ BRANDENBURG\n")])
     assert b is None or not b.authors
+
+
+# -- serialisation -----------------------------------------------------------
+
+
+def test_unset_paper_fields_are_not_written_to_other_documents(tmp_path) -> None:
+    import json
+
+    from shelf.manifest import Manifest
+
+    m = Manifest()
+    m.add(Document(id="rm0433", file="r.pdf", type="reference-manual", revision="Rev 8", sha256="a"))
+    m.add(_paper(id="dither", sha256="b", authors=["RAY M. DOLBY"], year=1967))
+    path = tmp_path / "shelf.json"
+    m.save(path)
+
+    raw = json.loads(path.read_text())
+    manual, paper = raw["documents"]
+    assert not {"authors", "year", "venue", "doi"} & set(manual)
+    assert paper["year"] == 1967
+    assert "doi" not in paper  # still unset on the paper itself
+
+    back = Manifest.load(path)
+    assert back.get("rm0433").authors == []
+    assert back.get("dither").cite_label == "Dolby (1967)"
