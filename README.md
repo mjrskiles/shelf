@@ -37,7 +37,8 @@ Three pieces, deliberately separate:
 - **`shelf.json`** — the manifest. Human-editable, git-tracked, the source of
   truth. For each document: id, file, type, part numbers, revision, page
   count, sha256, printed-page offset, text-layer quality, table of contents,
-  notes. Plus a `wanted` list of documents you don't have yet.
+  notes. Papers carry a byline instead of a revision — authors, year, venue,
+  doi. Plus a `wanted` list of documents you don't have yet.
 - **`.shelf/catalog.db`** — a derived SQLite database with an FTS5 full-text
   index over every page of every PDF. Rebuildable at any time from the
   manifest and the PDFs; never synced, never backed up, never edited by hand.
@@ -143,6 +144,31 @@ other.
 `RM0433 Rev 8 §51.5.8, p. 2048`. Document revision is part of the fact;
 `shelf verify` nags about documents whose revision is still `unknown` or
 still marked `auto`.
+
+### Papers are published, not revised
+
+A `paper` has no revision and never will, so shelf identifies it by byline:
+`authors`, `year`, `venue`, `doi`. Citations become
+`dither-in-digital-audio Vanderkooy & Lipshitz (1987), JAES, p. 966`, and
+`shelf verify` asks for authors and year rather than nagging forever for a
+revision that does not exist.
+
+`shelf inspect` reads AES covers for this: the running JAES footer
+(`J. Audio Eng. Soc., Vol. 35, No. 12, 1987 December`) and the
+`Presented at the 76th Convention` line. It takes the JAES footer over the
+convention line, because the journal publication is the version of record.
+
+Bylines are the one thing it will not guess at. An all-caps title
+(`SPECIFIC ACOUSTIC WAVE ADMITTANCE`) has the same shape as an all-caps
+byline, so a name is only believed when it carries an initial —
+`RICHARD C. HEYSER`, `R. A. GREINER`. That misses plain two-token bylines
+(`KARLHEINZ BRANDENBURG`), which is the intended trade: a missing byline is a
+prompt to go look, a fabricated one is a lie in your citations. Fill the rest
+in by hand:
+
+```bash
+shelf edit mp3-and-aac-explained --author "Karlheinz Brandenburg" --year 1999 --venue "AES 17th Conference"
+```
 
 ## Roadmap
 

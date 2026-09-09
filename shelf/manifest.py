@@ -32,6 +32,24 @@ DOC_TYPES = (
 TEXT_LAYERS = ("good", "partial", "poor", "unknown")
 
 
+def format_surnames(authors: list[str]) -> str:
+    """"Smith"; "Smith & Jones"; "Smith et al." for three or more.
+
+    The surname is the last whitespace-separated token of the name as printed
+    ("JOHN VANDERKOOY" -> "Vanderkooy"), which is right for the overwhelming
+    majority and wrong for compound surnames ("VAN DEN BERG" -> "Berg").
+    `shelf edit --author` is the fix when it matters.
+    """
+    last = [a.split()[-1].title() for a in authors if a.strip()]
+    if not last:
+        return ""
+    if len(last) == 1:
+        return last[0]
+    if len(last) == 2:
+        return f"{last[0]} & {last[1]}"
+    return f"{last[0]} et al."
+
+
 @dataclass
 class TocEntry:
     section: str  # "51.4.8", "A.2", or "" for unnumbered headings
@@ -50,6 +68,13 @@ class Document:
     vendor: str = ""
     title: str = ""
     revision: str = "unknown"
+    # Bibliographic identity, for documents that are published rather than
+    # revised (type "paper"). A paper has no revision; it has an author list,
+    # a year, and a venue, and that is what a citation of it must carry.
+    authors: list[str] = field(default_factory=list)
+    year: int = 0  # 0 = unknown
+    venue: str = ""  # "JAES", "DAFx-20", "ICASSP"
+    doi: str = ""
     pages: int = 0
     sha256: str = ""
     # printed page = pdf page index (1-based) - page_offset.
@@ -69,6 +94,32 @@ class Document:
             raise ShelfError(f"{self.id}: unknown type {self.type!r}; one of {', '.join(DOC_TYPES)}")
         if self.text_layer not in TEXT_LAYERS:
             raise ShelfError(f"{self.id}: text_layer must be one of {', '.join(TEXT_LAYERS)}")
+
+    @property
+    def is_paper(self) -> bool:
+        return self.type == "paper"
+
+    @property
+    def cite_label(self) -> str:
+        """The 'which document, which version' half of a citation.
+
+        For a revised document that is its revision ("Rev 8"). For a paper it
+        is the byline — "Vanderkooy & Lipshitz (1978), JAES" — because a paper
+        is identified by who wrote it and when, not by a revision that will
+        never exist. Empty when nothing is known either way.
+        """
+        if not self.is_paper:
+            return "" if self.revision == "unknown" else self.revision
+        names = format_surnames(self.authors)
+        parts = []
+        if names:
+            parts.append(names)
+        if self.year:
+            parts.append(f"({self.year})" if names else str(self.year))
+        label = " ".join(parts)
+        if self.venue:
+            label = f"{label}, {self.venue}" if label else self.venue
+        return label
 
     def printed_page(self, pdf_page: int) -> int:
         return pdf_page - (self.page_offset or 0)
@@ -164,10 +215,22 @@ class Manifest:
         m._check_unique()
         return m
 
+    # Bibliography belongs to papers. Writing `"venue": ""` onto ninety
+    # datasheets is noise in the one file a human is meant to read and edit,
+    # so these are omitted when unset; `Document`'s defaults restore them.
+    _PAPER_FIELDS = {"authors": [], "year": 0, "venue": "", "doi": ""}
+
     def to_dict(self) -> dict[str, Any]:
+        docs = []
+        for d in self.documents:
+            raw = asdict(d)
+            for name, empty in self._PAPER_FIELDS.items():
+                if raw[name] == empty:
+                    del raw[name]
+            docs.append(raw)
         return {
             "version": self.version,
-            "documents": [asdict(d) for d in self.documents],
+            "documents": docs,
             "wanted": [asdict(w) for w in self.wanted],
         }
 

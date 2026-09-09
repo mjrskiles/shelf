@@ -23,16 +23,41 @@ def test_detect_offset_rejects_disagreement_and_absence() -> None:
 
 
 def test_detect_offset_ignores_appendix_subnumbering() -> None:
-    # TI datasheets: 40 body pages with bare numbers we can't read, then an
-    # addendum numbered "Addendum-Page 1..3" on pdf pages 38-40. Three
-    # consecutive agreeing pages in one cluster must not become an offset.
-    pages = [(i, f"body text {i}") for i in range(1, 38)]
+    # An addendum numbered "Addendum-Page 1..3" on pdf pages 38-40, over a body
+    # that carries no page numbers at all. Three consecutive agreeing pages in
+    # one cluster must not become an offset.
+    pages = [(i, "body text with no folio") for i in range(1, 38)]
     pages += [(38, "Addendum-Page 1"), (39, "Addendum-Page 2"), (40, "Pack Materials-Page 3")]
     assert detect_offset(pages, 40) is None
     # ...whereas genuine "page N" footers spread across the document are accepted.
     genuine = [(i, f"DS22039D-page {i}") for i in range(1, 41)]
     det = detect_offset(genuine, 40)
     assert det is not None and det.value == 0
+
+
+def test_detect_offset_reads_bare_footer_numbers() -> None:
+    # TI's real layout: the folio is the first token of the footer line and is
+    # never labelled. The fallback tier reads it, and an addendum numbering
+    # itself separately at the end does not outvote the body.
+    pages = [(i, f"PCM3060\n{i}    Submit Documentation Feedback") for i in range(1, 38)]
+    pages += [(38, "Addendum-Page 1"), (39, "Addendum-Page 2"), (40, "Pack Materials-Page 3")]
+    det = detect_offset(pages, 40)
+    assert det is not None and det.value == 0
+
+    # Electrosmith puts it last, and offsets it by a cover and colophon.
+    trailing = [(i, f"Performance\nFrequency (Hz)   {i - 3}") for i in range(4, 21)]
+    det = detect_offset(trailing, 20)
+    assert det is not None and det.value == 3
+
+
+def test_bare_numbers_scattered_through_prose_are_not_a_folio() -> None:
+    # The risk the fallback tier takes on: any table can end a line with a
+    # number. Agreement has to be near-unanimous before it counts.
+    import random
+
+    rng = random.Random(7)
+    pages = [(i, f"value at node {rng.randrange(1, 40)}") for i in range(1, 41)]
+    assert detect_offset(pages, 40) is None
 
 
 def test_detect_revision_prefers_title_then_cover() -> None:
