@@ -22,7 +22,7 @@ from shelf.config import (
 from shelf.index import Index
 from shelf.ingest import apply as ingest_apply
 from shelf.ingest import scan as ingest_scan
-from shelf.manifest import DOC_TYPES, Document, Manifest, Wanted
+from shelf.manifest import DOC_TYPES, Document, Manifest, Wanted, format_surnames
 from shelf.pdf import extract_pages, pdf_info, sha256_file, text_layer_quality
 
 
@@ -102,6 +102,10 @@ def cmd_add(args: argparse.Namespace) -> int:
         vendor=args.vendor or "",
         title=args.title or info.title,
         revision=args.revision or "unknown",
+        authors=args.author or [],
+        year=args.year or 0,
+        venue=args.venue or "",
+        doi=args.doi or "",
         pages=info.pages,
         sha256=sha,
         page_offset=args.page_offset,
@@ -120,7 +124,9 @@ def cmd_add(args: argparse.Namespace) -> int:
         idx.close()
 
     print(f"added {doc.id}: {doc.file} ({doc.pages} pages, text layer {doc.text_layer})")
-    if doc.revision == "unknown":
+    if doc.is_paper and not (doc.authors and doc.year):
+        print("  byline incomplete — check the cover and `shelf edit --author/--year` it", file=sys.stderr)
+    elif not doc.is_paper and doc.revision == "unknown":
         print("  revision unknown — check the cover and `shelf edit` it", file=sys.stderr)
     return 0
 
@@ -150,7 +156,14 @@ def cmd_show(args: argparse.Namespace) -> int:
     print(f"  vendor:      {d.vendor}")
     print(f"  parts:       {', '.join(d.parts)}")
     auto = f"  (auto-detected: {', '.join(d.auto)})" if d.auto else ""
-    print(f"  revision:    {d.revision}{auto}")
+    if d.is_paper:
+        print(f"  authors:     {', '.join(d.authors) or 'unknown'}{auto}")
+        print(f"  year:        {d.year or 'unknown'}")
+        print(f"  venue:       {d.venue or 'unknown'}")
+        if d.doi:
+            print(f"  doi:         {d.doi}")
+    else:
+        print(f"  revision:    {d.revision}{auto}")
     print(f"  file:        {d.file}  ({'present' if on_disk else 'MISSING'})")
     offset = f"printed = pdf − {d.page_offset}" if d.offset_known else "page offset not yet checked"
     print(f"  pages:       {d.pages}  ({offset})")
@@ -229,10 +242,11 @@ def _parse_pages(spec: str) -> list[int]:
 
 
 def _cite(doc: Document, pdf_page: int) -> str:
-    rev = f" {doc.revision}" if doc.revision != "unknown" else ""
+    label = doc.cite_label
+    who = f" {label}" if label else ""
     if doc.offset_known:
-        return f"{doc.id}{rev}, p. {doc.printed_page(pdf_page)} (pdf p. {pdf_page})"
-    return f"{doc.id}{rev}, pdf p. {pdf_page} (printed page offset unknown)"
+        return f"{doc.id}{who}, p. {doc.printed_page(pdf_page)} (pdf p. {pdf_page})"
+    return f"{doc.id}{who}, pdf p. {pdf_page} (printed page offset unknown)"
 
 
 _SECTION_REF = re.compile(r"^§?\s*([A-Z]?\d+(?:\.\d+)+|[A-Z](?:\.\d+)+|§\d+)$")
@@ -389,7 +403,19 @@ def cmd_inspect(args: argparse.Namespace) -> int:
                 continue
             result = inspection.inspect(doc, idx.pages_for(doc.id))
             off = "?" if result.offset is None else f"{result.offset.value} (pp. {result.offset.evidence[0]}…{result.offset.evidence[-1]}, {len(result.offset.evidence)} agree)"
-            rev = "?" if result.revision is None else f"{result.revision.value}" + (f" (pdf p. {result.revision.evidence[0]})" if result.revision.evidence else " (title)")
+            if doc.is_paper:
+                b = result.biblio
+                bits = []
+                if b is not None:
+                    if b.authors:
+                        bits.append(format_surnames(b.authors))
+                    if b.year:
+                        bits.append(str(b.year))
+                    if b.venue:
+                        bits.append(b.venue)
+                rev = ", ".join(bits) if bits else "?"
+            else:
+                rev = "?" if result.revision is None else f"{result.revision.value}" + (f" (pdf p. {result.revision.evidence[0]})" if result.revision.evidence else " (title)")
             status = ""
             if args.apply:
                 changed = inspection.apply(doc, result, force=args.force)
@@ -401,11 +427,15 @@ def cmd_inspect(args: argparse.Namespace) -> int:
                     pending.append("page_offset")
                 if result.revision is not None and (args.force or doc.revision == "unknown"):
                     pending.append("revision")
+                if result.biblio is not None:
+                    for name, cur in (("authors", doc.authors), ("year", doc.year), ("venue", doc.venue)):
+                        if getattr(result.biblio, name) and (args.force or not cur):
+                            pending.append(name)
                 status = "would set " + ", ".join(pending) if pending else "nothing to do"
             rows.append([doc.id, off, rev, status])
     finally:
         idx.close()
-    print(_table(rows, ["id", "page offset", "revision", "action"]))
+    print(_table(rows, ["id", "page offset", "revision / byline", "action"]))
     if args.apply:
         manifest.save(manifest_path(root))
         print(f"\nupdated {changed_docs} document(s); guessed fields are marked `auto` — "
@@ -456,7 +486,7 @@ def cmd_edit(args: argparse.Namespace) -> int:
     root, manifest = _load(args)
     d = manifest.get(args.id)
     changed = []
-    for attr in ("revision", "vendor", "title", "notes", "type"):
+    for attr in ("revision", "vendor", "title", "notes", "type", "venue", "doi"):
         val = getattr(args, attr)
         if val is not None:
             setattr(d, attr, val)
@@ -464,6 +494,12 @@ def cmd_edit(args: argparse.Namespace) -> int:
     if args.parts is not None:
         d.parts = args.parts
         changed.append("parts")
+    if args.author is not None:
+        d.authors = args.author
+        changed.append("authors")
+    if args.year is not None:
+        d.year = args.year
+        changed.append("year")
     if args.page_offset is not None:
         d.page_offset = args.page_offset
         changed.append("page_offset")
@@ -537,7 +573,11 @@ def cmd_verify(args: argparse.Namespace) -> int:
         if d.sha256 and sha256_file(path) != d.sha256:
             print(f"CHANGED  {d.id}: {d.file} does not match recorded sha256")
             problems += 1
-        if d.revision == "unknown":
+        if d.is_paper:
+            missing = [n for n, v in (("authors", d.authors), ("year", d.year)) if not v]
+            if missing:
+                print(f"BIBLIO   {d.id}: {', '.join(missing)} unknown — check the cover")
+        elif d.revision == "unknown":
             print(f"REVISION {d.id}: unknown — check the cover")
         if d.auto:
             print(f"AUTO     {d.id}: {', '.join(d.auto)} guessed by `shelf inspect` — confirm with `shelf edit`")
@@ -570,6 +610,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--vendor")
     s.add_argument("--title", help="default: PDF metadata title")
     s.add_argument("--revision", help="document revision from the cover, e.g. 'Rev 8'")
+    s.add_argument("--author", nargs="*", metavar="NAME", help="paper byline, in order")
+    s.add_argument("--year", type=int, help="publication year (papers)")
+    s.add_argument("--venue", help="where it was published, e.g. JAES (papers)")
+    s.add_argument("--doi")
     s.add_argument("--notes")
     s.add_argument("--source", help="where it came from (URL)")
     s.add_argument("--page-offset", type=int, default=None,
@@ -640,6 +684,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("edit", help="update a document's metadata")
     s.add_argument("id")
     s.add_argument("--revision")
+    s.add_argument("--author", nargs="*", metavar="NAME", help="paper byline, in order")
+    s.add_argument("--year", type=int)
+    s.add_argument("--venue")
+    s.add_argument("--doi")
     s.add_argument("--vendor")
     s.add_argument("--title")
     s.add_argument("--notes")
