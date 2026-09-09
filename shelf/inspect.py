@@ -262,23 +262,32 @@ def inspect(doc: Document, pages: list[tuple[int, str]]) -> Inspection:
 
 def apply(doc: Document, result: Inspection, force: bool = False) -> list[str]:
     """Write guesses into ``doc`` for fields that are unknown (or all, with
-    ``force``). Returns the field names changed; marks them in ``doc.auto``."""
+    ``force``). Returns the field names changed; marks them in ``doc.auto``.
+
+    Fields retired as undoable are skipped even under ``force``: someone read
+    the document and established the answer is not in it, which outranks a
+    pattern match. `shelf undoable --clear` reopens one.
+    """
     changed: list[str] = []
-    if result.offset is not None and (force or doc.page_offset is None):
+
+    def wanted(name: str, unset: bool) -> bool:
+        return not doc.is_undoable(name) and (force or unset)
+
+    if result.offset is not None and wanted("page_offset", doc.page_offset is None):
         doc.page_offset = int(result.offset.value)
         changed.append("page_offset")
-    if result.revision is not None and (force or doc.revision == "unknown"):
+    if result.revision is not None and wanted("revision", doc.revision == "unknown"):
         doc.revision = str(result.revision.value)
         changed.append("revision")
     if result.biblio is not None:
         b = result.biblio
-        if b.authors and (force or not doc.authors):
+        if b.authors and wanted("authors", not doc.authors):
             doc.authors = list(b.authors)
             changed.append("authors")
-        if b.year and (force or not doc.year):
+        if b.year and wanted("year", not doc.year):
             doc.year = b.year
             changed.append("year")
-        if b.venue and (force or not doc.venue):
+        if b.venue and wanted("venue", not doc.venue):
             doc.venue = b.venue
             changed.append("venue")
     for name in changed:

@@ -94,9 +94,15 @@ def test_cli_inspect_read_grep_roundtrip(shelf_root: Path, capsys: pytest.Captur
     assert doc.page_offset == 1 and doc.revision == "Rev. C"
     assert sorted(doc.auto) == ["page_offset", "revision"]
 
-    # verify flags the guesses; edit confirms and clears the marker.
+    # verify stays clean — a guess is debt, not a broken corpus — and `debt`
+    # puts both guesses in the confirm tier. edit confirms and clears the marker.
     assert main(["--root", root, "verify"]) == 0
-    assert "AUTO     widget: page_offset, revision" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "0 problem(s)" in out and "see `shelf debt`" in out
+    assert main(["--root", root, "debt", "--tier", "confirm"]) == 0
+    out = capsys.readouterr().out
+    assert "CONFIRM  2 field(s)" in out
+    assert "corroborate and clear" in out
     assert main(["--root", root, "edit", "widget", "--revision", "Rev. C"]) == 0
     assert Manifest.load(shelf_root / "shelf.json").get("widget").auto == ["page_offset"]
     capsys.readouterr()
