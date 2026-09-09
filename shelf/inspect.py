@@ -20,6 +20,15 @@ _FRACTION = re.compile(r"(?<![\d.])(\d{1,4})\s*/\s*(\d{1,4})(?![\d.])")
 # not here, because the hyphen form is legitimate for other vendors.
 _PAGE_WORD = re.compile(r"(?<!\w)[Pp]age\s+(\d{1,4})\b(?!\s*/)")
 
+# A bare number alone at the start or end of a footer line. TI prints
+# "2    Submit Documentation Feedback"; Electrosmith prints the number last.
+# Neither says "page" nor gives a total, so the patterns above cannot see them.
+# Bare numbers are noisier — any table can end a line with a figure — so this
+# is a fallback tier: consulted only when nothing labelled was found, and held
+# to a higher bar of agreement.
+_BARE_LEAD = re.compile(r"^\s*(\d{1,4})\s+\S")
+_BARE_TRAIL = re.compile(r"(?<!\S)(\d{1,4})\s*$")
+
 # "(Rev. B)" in a title; "Rev 8", "Revision 2", "Rev. A" in text; "v1.0.5".
 _REV_TITLE = re.compile(r"\(\s*(Rev\.?\s*[A-Z0-9]+(?:\.\d+)*)\s*\)", re.I)
 _REV_TEXT = re.compile(r"\b(Rev(?:ision)?)\b(\.?)\s*([A-Z]\b|\d+(?:\.\d+)*)", re.I)
@@ -166,7 +175,8 @@ def detect_offset(pages: list[tuple[int, str]], total: int) -> Detection | None:
         wanted = set(range(lo, hi, step))
         sample = [p for p in pages if p[0] in wanted]
 
-    votes: dict[int, list[int]] = defaultdict(list)
+    labelled: dict[int, list[int]] = defaultdict(list)
+    bare: dict[int, list[int]] = defaultdict(list)
     for pdf_page, text in sample:
         edges = _edges(text)
         printed: list[int] = []
@@ -179,14 +189,34 @@ def detect_offset(pages: list[tuple[int, str]], total: int) -> Detection | None:
         for pp in printed:
             off = pdf_page - pp
             if 0 <= off <= 60:
-                votes[off].append(pdf_page)
+                labelled[off].append(pdf_page)
+        for pp in _bare_numbers(edges, total):
+            off = pdf_page - pp
+            if 0 <= off <= 60:
+                bare[off].append(pdf_page)
 
+    need = 2 if total <= 20 else 3
+    return _decide(labelled, total, need, 0.6) or _decide(bare, total, max(need, 4), 0.75)
+
+
+def _bare_numbers(edges: str, total: int) -> list[int]:
+    out: list[int] = []
+    for line in edges.splitlines():
+        for pat in (_BARE_LEAD, _BARE_TRAIL):
+            m = pat.search(line)
+            if m:
+                n = int(m.group(1))
+                if 1 <= n <= total:
+                    out.append(n)
+    return out
+
+
+def _decide(votes: dict[int, list[int]], total: int, need: int, ratio: float) -> Detection | None:
     if not votes:
         return None
     best = max(votes.items(), key=lambda kv: len(kv[1]))
     n_votes = sum(len(v) for v in votes.values())
-    need = 2 if total <= 20 else 3
-    if len(best[1]) < need or len(best[1]) / n_votes < 0.6:
+    if len(best[1]) < need or len(best[1]) / n_votes < ratio:
         return None
     evidence = sorted(set(best[1]))
     # A few consecutive pages agreeing is what an appendix with its own
