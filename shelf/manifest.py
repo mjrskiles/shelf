@@ -88,12 +88,26 @@ class Document:
     # Fields whose values were guessed by `shelf inspect` and not yet
     # confirmed by a human, e.g. ["revision", "page_offset"].
     auto: list[str] = field(default_factory=list)
+    # Fields that cannot be filled from any source, mapped to why — a scan with
+    # no folio on any page has no printed-page offset, and a manual that
+    # identifies itself by date alone has no revision. Distinct from unknown:
+    # unknown means nobody has looked, this means someone looked and the answer
+    # does not exist. Without it every pass re-reads the same dead ends.
+    undoable: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.type not in DOC_TYPES:
             raise ShelfError(f"{self.id}: unknown type {self.type!r}; one of {', '.join(DOC_TYPES)}")
         if self.text_layer not in TEXT_LAYERS:
             raise ShelfError(f"{self.id}: text_layer must be one of {', '.join(TEXT_LAYERS)}")
+        for name, why in self.undoable.items():
+            if not why.strip():
+                raise ShelfError(f"{self.id}: undoable {name!r} needs a reason")
+            if name in self.auto:
+                raise ShelfError(f"{self.id}: {name!r} is both a guess and undoable")
+
+    def is_undoable(self, name: str) -> bool:
+        return name in self.undoable
 
     @property
     def is_paper(self) -> bool:
@@ -215,16 +229,17 @@ class Manifest:
         m._check_unique()
         return m
 
-    # Bibliography belongs to papers. Writing `"venue": ""` onto ninety
-    # datasheets is noise in the one file a human is meant to read and edit,
-    # so these are omitted when unset; `Document`'s defaults restore them.
-    _PAPER_FIELDS = {"authors": [], "year": 0, "venue": "", "doi": ""}
+    # Fields that only some documents have. Writing `"venue": ""` onto ninety
+    # datasheets, or `"undoable": {}` onto all of them, is noise in the one file
+    # a human is meant to read and edit, so these are omitted when unset;
+    # `Document`'s defaults restore them on load.
+    _OMIT_WHEN_EMPTY = {"authors": [], "year": 0, "venue": "", "doi": "", "undoable": {}}
 
     def to_dict(self) -> dict[str, Any]:
         docs = []
         for d in self.documents:
             raw = asdict(d)
-            for name, empty in self._PAPER_FIELDS.items():
+            for name, empty in self._OMIT_WHEN_EMPTY.items():
                 if raw[name] == empty:
                     del raw[name]
             docs.append(raw)

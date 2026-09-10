@@ -77,6 +77,8 @@ shelf edit rm0433 --page-offset 0 --revision "Rev 8"
 shelf wanted add es0392 --title "ES0392 errata" --why "check §2.2.10"
 shelf index                                    # rebuild after editing PDFs or the manifest
 shelf verify                                   # missing files, changed hashes, uncatalogued PDFs
+shelf debt                                     # open metadata fields, by what could close them
+shelf undoable <id> revision "date only"       # this field cannot be filled — stop asking
 shelf ingest                                   # dry run: uncatalogued PDFs, moved files, duplicates
 shelf ingest --apply                           # catalog them with guessed metadata (revision unknown)
 ```
@@ -91,7 +93,7 @@ left alone), and **new**. For new files it guesses an id (vendor document
 numbers like `rm0433` or `es0392` win; otherwise a slug of the filename),
 a type (from filename, PDF title, and directory names like `papers/`), and
 part numbers (conservatively). Everything it adds is marked `revision:
-unknown` with an "ingested — verify" note, so `shelf verify` keeps nagging
+unknown` with an "ingested — verify" note, so `shelf debt` keeps listing them
 until you've confirmed the metadata with `shelf edit`.
 
 A new file whose guessed id matches a `wanted` entry fulfils it.
@@ -127,8 +129,54 @@ numbers (`2081/3353`, `page 13/73`) and solves for the printed-page offset,
 and scans the title and cover for a revision (`Rev 8`, `Rev. B`, `v1.0.5`).
 It only believes an offset when several pages agree. `--apply` writes the
 guesses for fields that are still unknown and records them in the document's
-`auto` list; `shelf verify` keeps flagging those until `shelf edit` confirms
-them, which clears the marker. `--force` re-guesses known values too.
+`auto` list; `shelf debt` keeps them in its `confirm` tier until `shelf edit`
+confirms them, which clears the marker. `--force` re-guesses known values too,
+but never touches a field retired as undoable.
+
+### verify vs debt — intact vs complete
+
+Two different questions, deliberately kept apart.
+
+`shelf verify` asks whether the corpus is **intact**: files present, hashes
+matching, no stray PDFs. Its exit code means something because it can actually
+come back clean.
+
+`shelf debt` asks whether the metadata is **complete**, and groups what is open
+by the cheapest thing that could close it:
+
+| tier | what closes it |
+|------|----------------|
+| `confirm` | a value `inspect` guessed — corroborate it on a page the detector didn't vote on |
+| `cover` | the document's own front matter: revision, title, paper byline |
+| `offset` | printed folio minus PDF index, read off two widely separated pages |
+| `web` | not in the document at all — `source_url`, and years no cover states |
+
+`--tier` and `--limit` carve out a batch, and `--json` makes it a work list.
+Batches are sorted by id, so the same `--limit 8` hands out the same eight
+documents every time.
+
+Mixing the two questions was the mistake worth fixing: an unknown revision
+would sit in `verify`'s output forever, so `verify` never came back clean and
+stopped being read.
+
+### undoable — the answer that does not exist
+
+Some fields cannot be filled from any source. A scanned paper with no folio on
+any page has no printed-page offset; a manual that identifies itself by date and
+document number has no revision. That is different from unknown — unknown means
+nobody has looked yet — and recording the difference is what stops every future
+pass re-reading the same dead ends.
+
+```bash
+shelf undoable ad2-rm revision "identifies itself by date and DOC# only"
+shelf undoable ad2-rm revision --clear     # reopen it
+```
+
+A reason is required: "cannot be filled" is a finding, and a finding has
+evidence behind it. Retired fields leave `shelf debt`, are reported separately
+in its total, and are skipped by `inspect --apply` even under `--force` —
+someone read the document, which outranks a pattern match. Filling the field by
+hand with `shelf edit` retires the retirement automatically.
 
 ### Printed pages vs PDF pages
 
@@ -142,15 +190,15 @@ other.
 
 `<id> <revision> §<section>, p. <printed page>` — e.g.
 `RM0433 Rev 8 §51.5.8, p. 2048`. Document revision is part of the fact;
-`shelf verify` nags about documents whose revision is still `unknown` or
-still marked `auto`.
+`shelf debt` lists documents whose revision is still `unknown` or still
+marked `auto`.
 
 ### Papers are published, not revised
 
 A `paper` has no revision and never will, so shelf identifies it by byline:
 `authors`, `year`, `venue`, `doi`. Citations become
 `dither-in-digital-audio Vanderkooy & Lipshitz (1987), JAES, p. 966`, and
-`shelf verify` asks for authors and year rather than nagging forever for a
+`shelf debt` asks for authors and year rather than nagging forever for a
 revision that does not exist.
 
 `shelf inspect` reads AES covers for this: the running JAES footer

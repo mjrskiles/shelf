@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import sys
+from dataclasses import asdict
 from datetime import date
 from pathlib import Path
 
 from shelf import ShelfError, __version__
+from shelf import debt as debt_mod
 from shelf import inspect as inspection
 from shelf import toc as toc_mod
 from shelf.config import (
@@ -165,7 +168,12 @@ def cmd_show(args: argparse.Namespace) -> int:
     else:
         print(f"  revision:    {d.revision}{auto}")
     print(f"  file:        {d.file}  ({'present' if on_disk else 'MISSING'})")
-    offset = f"printed = pdf − {d.page_offset}" if d.offset_known else "page offset not yet checked"
+    if d.offset_known:
+        offset = f"printed = pdf − {d.page_offset}"
+    elif d.is_undoable("page_offset"):
+        offset = "no page offset — undoable"
+    else:
+        offset = "page offset not yet checked"
     print(f"  pages:       {d.pages}  ({offset})")
     print(f"  text layer:  {d.text_layer}")
     print(f"  sha256:      {d.sha256}")
@@ -175,6 +183,8 @@ def cmd_show(args: argparse.Namespace) -> int:
         print(f"  added:       {d.added}")
     if d.notes:
         print(f"  notes:       {d.notes}")
+    for name, why in d.undoable.items():
+        print(f"  undoable:    {name} — {why}")
     if d.toc:
         print(f"  toc:         {len(d.toc)} entries (`shelf toc {d.id}`)")
         for t in d.toc[: args.toc_lines]:
@@ -508,8 +518,11 @@ def cmd_edit(args: argparse.Namespace) -> int:
         changed.append("source_url")
     if not changed:
         raise ShelfError("nothing to change")
-    # A human-set value is no longer a guess.
+    # A human-set value is no longer a guess, and a field someone just filled
+    # was evidently not impossible to fill.
     d.auto = [a for a in d.auto if a not in changed]
+    for name in changed:
+        d.undoable.pop(name, None)
     # Re-run validation on the mutated dataclass.
     Document(**{k: v for k, v in d.__dict__.items()})
     manifest.save(manifest_path(root))
@@ -560,6 +573,12 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
+    """Integrity only: is the corpus intact? Metadata completeness is `debt`.
+
+    Keeping them apart keeps the exit code meaningful. A missing file is
+    something to fix now; an unknown revision is something to work through, and
+    mixing them means `verify` never comes back clean and stops being read.
+    """
     root, manifest = _load(args)
     problems = 0
     catalogued = set()
@@ -573,20 +592,62 @@ def cmd_verify(args: argparse.Namespace) -> int:
         if d.sha256 and sha256_file(path) != d.sha256:
             print(f"CHANGED  {d.id}: {d.file} does not match recorded sha256")
             problems += 1
-        if d.is_paper:
-            missing = [n for n, v in (("authors", d.authors), ("year", d.year)) if not v]
-            if missing:
-                print(f"BIBLIO   {d.id}: {', '.join(missing)} unknown — check the cover")
-        elif d.revision == "unknown":
-            print(f"REVISION {d.id}: unknown — check the cover")
-        if d.auto:
-            print(f"AUTO     {d.id}: {', '.join(d.auto)} guessed by `shelf inspect` — confirm with `shelf edit`")
     for pdf in sorted(root.rglob("*.pdf")):
         if pdf.resolve() not in catalogued and ".shelf" not in pdf.parts:
             print(f"ORPHAN   {pdf.relative_to(root)} is not in the manifest")
             problems += 1
+    open_fields = debt_mod.total_open(manifest)
     print(f"{len(manifest.documents)} documents, {problems} problem(s)")
+    if open_fields:
+        print(f"{open_fields} open metadata field(s) — see `shelf debt`")
     return 1 if problems else 0
+
+
+def cmd_debt(args: argparse.Namespace) -> int:
+    _, manifest = _load(args)
+    full = debt_mod.census(manifest, tier=args.tier)
+    shown = debt_mod.census(manifest, tier=args.tier, limit=args.limit)
+
+    if args.json:
+        payload = {t: [asdict(g) for g in rows] for t, rows in shown.items()}
+        json.dump(payload, sys.stdout, indent=2, ensure_ascii=False)
+        print()
+        return 0
+
+    for tier, rows in full.items():
+        ids = {g.doc_id for g in rows}
+        shown_ids = {g.doc_id for g in shown[tier]}
+        print(f"\n{tier.upper()}  {len(rows)} field(s) across {len(ids)} document(s)")
+        for g in shown[tier]:
+            print(f"  {g.doc_id:<50} {g.field:<13} {g.detail}")
+        if len(ids) > len(shown_ids):
+            print(f"  … {len(ids) - len(shown_ids)} more document(s)")
+    total = debt_mod.total_open(manifest)
+
+    retired = sum(len(d.undoable) for d in manifest.documents)
+    print(f"\n{len(manifest.documents)} documents, {total} open field(s)", end="")
+    print(f", {retired} retired as undoable" if retired else "")
+    return 0
+
+
+def cmd_undoable(args: argparse.Namespace) -> int:
+    root, manifest = _load(args)
+    d = manifest.get(args.id)
+    if args.clear:
+        if args.field not in d.undoable:
+            raise ShelfError(f"{d.id}: {args.field!r} is not recorded as undoable")
+        del d.undoable[args.field]
+        print(f"{d.id}: {args.field} is open again")
+    else:
+        if not args.reason:
+            raise ShelfError("a reason is required — what was checked, and why the answer does not exist")
+        if args.field not in debt_mod.DEBT_FIELDS:
+            raise ShelfError(f"{args.field!r} is not a curatable field; one of {', '.join(debt_mod.DEBT_FIELDS)}")
+        d.undoable[args.field] = args.reason
+        d.auto = [a for a in d.auto if a != args.field]
+        print(f"{d.id}: {args.field} retired as undoable — {args.reason}")
+    manifest.save(manifest_path(root))
+    return 0
 
 
 # -- parser ------------------------------------------------------------------
@@ -704,6 +765,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("verify", help="check files exist, hashes match, and no PDFs are uncatalogued")
     s.set_defaults(func=cmd_verify)
+
+    s = sub.add_parser("debt", help="open metadata fields, grouped by what could close them")
+    s.add_argument("--tier", choices=debt_mod.TIERS, help="only this tier")
+    s.add_argument("--limit", type=int, help="at most N documents per tier")
+    s.add_argument("--json", action="store_true", help="machine-readable, for planning a batch")
+    s.set_defaults(func=cmd_debt)
+
+    s = sub.add_parser("undoable", help="record that a field cannot be filled from any source")
+    s.add_argument("id")
+    s.add_argument("field", choices=debt_mod.DEBT_FIELDS)
+    s.add_argument("reason", nargs="?", help="what was checked, and why the answer does not exist")
+    s.add_argument("--clear", action="store_true", help="reopen the field")
+    s.set_defaults(func=cmd_undoable)
 
     return p
 
