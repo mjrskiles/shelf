@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from shelf import ShelfError
-from shelf.manifest import Document, Manifest, TocEntry, Wanted
+from shelf.manifest import SCHEMA_VERSION, Document, Manifest, TocEntry, Wanted
 
 
 def _doc(**kw) -> Document:
@@ -24,6 +24,53 @@ def test_roundtrip(tmp_path: Path) -> None:
     assert loaded.get("rm0433").toc[0].page == 2048
     assert loaded.wanted[0].why == "hw #9"
     assert path.read_text().endswith("}\n")
+
+
+def test_toc_lives_in_a_sidecar(tmp_path: Path) -> None:
+    m = Manifest()
+    m.add(_doc(toc=[TocEntry("1", "Intro", 1, pdf_page=3), TocEntry("2", "Regs", 8, pdf_page=10)]))
+    path = tmp_path / "shelf.json"
+    m.save(path)
+
+    assert "toc" not in path.read_text()
+    sidecar = tmp_path / "toc" / "rm0433.json"
+    text = sidecar.read_text()
+    assert text.startswith('{\n  "id": "rm0433",')
+    assert text.count('"section"') == 2 and text.count("\n") == 7  # one entry per line
+    assert text.endswith("\n")
+    assert [t.title for t in Manifest.load(path).get("rm0433").toc] == ["Intro", "Regs"]
+
+    # An unrelated save leaves the sidecar untouched; an empty TOC removes it.
+    before = sidecar.stat().st_mtime_ns
+    m.get("rm0433").revision = "Rev 9"
+    m.save(path)
+    assert sidecar.stat().st_mtime_ns == before
+    m.get("rm0433").toc = []
+    m.save(path)
+    assert not sidecar.exists()
+    assert Manifest.load(path).get("rm0433").toc == []
+
+
+def test_orphan_and_malformed_sidecars(tmp_path: Path) -> None:
+    m = Manifest()
+    m.add(_doc())
+    path = tmp_path / "shelf.json"
+    m.save(path)
+    (tmp_path / "toc").mkdir()
+    stray = tmp_path / "toc" / "gone.json"
+    stray.write_text('{"id": "gone", "entries": []}\n')
+    assert m.orphan_tocs(path) == [stray]
+
+    (tmp_path / "toc" / "rm0433.json").write_text('{"entries": [{"nope": 1}]}\n')
+    with pytest.raises(ShelfError, match="malformed TOC"):
+        Manifest.load(path)
+
+
+def test_inline_toc_schema_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "shelf.json"
+    path.write_text('{"version": 1, "documents": [], "wanted": []}\n')
+    with pytest.raises(ShelfError, match="schema version 1"):
+        Manifest.load(path)
 
 
 def test_add_removes_from_wanted() -> None:
@@ -66,7 +113,7 @@ def test_printed_page_offset() -> None:
 
 def test_wanted_and_catalogued_conflict_detected() -> None:
     raw = {
-        "version": 1,
+        "version": SCHEMA_VERSION,
         "documents": [{"id": "x", "file": "x.pdf", "type": "datasheet"}],
         "wanted": [{"id": "x", "title": "X"}],
     }

@@ -73,6 +73,8 @@ def test_cli_toc_and_read_by_section(shelf_root: Path, capsys: pytest.CaptureFix
     out = capsys.readouterr().out
     assert "rm: 3 entries from 3 outline items" in out
     assert Manifest.load(shelf_root / "shelf.json").get("rm").toc[1].page == 2  # pdf 3 − offset 1
+    assert (shelf_root / "toc" / "rm.json").is_file()
+    assert "toc" not in (shelf_root / "shelf.json").read_text()
 
     assert main(["--root", root, "toc", "rm"]) == 0
     out = capsys.readouterr().out
@@ -96,3 +98,8 @@ def test_cli_toc_and_read_by_section(shelf_root: Path, capsys: pytest.CaptureFix
     assert main(["--root", root, "add", str(plain), "--id", "plain", "--type", "other"]) == 0
     assert main(["--root", root, "toc", "plain", "--build"]) == 1
     assert "no outline" in capsys.readouterr().out
+
+    # verify reports a TOC file nobody owns.
+    (shelf_root / "toc" / "ghost.json").write_text('{"id": "ghost", "entries": []}\n')
+    assert main(["--root", root, "verify"]) == 1
+    assert "ORPHAN   toc/ghost.json" in capsys.readouterr().out

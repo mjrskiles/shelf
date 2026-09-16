@@ -2,6 +2,12 @@
 
 ``shelf.json`` is the source of truth. Everything in ``.shelf/`` is derived
 from it plus the PDFs and can be rebuilt at any time.
+
+Tables of contents live beside it, one ``toc/<id>.json`` per document. They
+are 97% of the catalogue by volume and are rebuilt from the PDF outline, so
+keeping them inline made every ``toc --build`` rewrite the whole manifest and
+left the one file a human is meant to review unreadable in a diff. Schema
+version 2 is version 1 with the ``toc`` key moved out.
 """
 
 from __future__ import annotations
@@ -12,8 +18,9 @@ from pathlib import Path
 from typing import Any
 
 from shelf import ShelfError
+from shelf.config import toc_dir, toc_path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DOC_TYPES = (
     "datasheet",
@@ -59,6 +66,40 @@ class TocEntry:
     level: int = 1  # nesting depth in the document's outline
 
 
+def load_toc(path: Path) -> list[TocEntry]:
+    """Read ``toc/<id>.json``; a document without one has no TOC."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except json.JSONDecodeError as e:
+        raise ShelfError(f"{path}: invalid JSON: {e}") from None
+    try:
+        return [TocEntry(**t) for t in raw["entries"]]
+    except (KeyError, TypeError) as e:
+        raise ShelfError(f"{path}: malformed TOC: {e}") from None
+
+
+def _toc_text(doc_id: str, toc: list[TocEntry]) -> str:
+    # One entry per line: a TOC of 3000 sections reviews as 3000 lines, not
+    # 21,000, and a rebuild after an offset change diffs entry by entry.
+    lines = [json.dumps(asdict(t), ensure_ascii=False) for t in toc]
+    body = ",\n".join("    " + line for line in lines)
+    return f'{{\n  "id": {json.dumps(doc_id)},\n  "entries": [\n{body}\n  ]\n}}\n'
+
+
+def save_toc(path: Path, doc_id: str, toc: list[TocEntry]) -> None:
+    """Write the sidecar if its content changed; remove it if the TOC is empty."""
+    if not toc:
+        path.unlink(missing_ok=True)
+        return
+    text = _toc_text(doc_id, toc)
+    if path.is_file() and path.read_text(encoding="utf-8") == text:
+        return
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
 @dataclass
 class Document:
     id: str
@@ -81,6 +122,7 @@ class Document:
     # None means nobody has checked yet; 0 means checked and equal.
     page_offset: int | None = None
     text_layer: str = "unknown"
+    # Loaded from and saved to toc/<id>.json; never written into shelf.json.
     toc: list[TocEntry] = field(default_factory=list)
     notes: str = ""
     source_url: str = ""
@@ -204,7 +246,11 @@ class Manifest:
             raise ShelfError(f"manifest not found: {path}") from None
         except json.JSONDecodeError as e:
             raise ShelfError(f"{path}: invalid JSON: {e}") from None
-        return cls.from_dict(raw, where=str(path))
+        m = cls.from_dict(raw, where=str(path))
+        root = path.parent
+        for d in m.documents:
+            d.toc = load_toc(toc_path(root, d.id))
+        return m
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any], where: str = "manifest") -> Manifest:
@@ -213,8 +259,6 @@ class Manifest:
             raise ShelfError(f"{where}: schema version {version} not supported (want {SCHEMA_VERSION})")
         docs = []
         for d in raw.get("documents", []):
-            d = dict(d)
-            d["toc"] = [TocEntry(**t) for t in d.get("toc", [])]
             try:
                 docs.append(Document(**d))
             except TypeError as e:
@@ -239,6 +283,7 @@ class Manifest:
         docs = []
         for d in self.documents:
             raw = asdict(d)
+            del raw["toc"]
             for name, empty in self._OMIT_WHEN_EMPTY.items():
                 if raw[name] == empty:
                     del raw[name]
@@ -250,8 +295,25 @@ class Manifest:
         }
 
     def save(self, path: Path) -> None:
+        """Write ``shelf.json`` and bring ``toc/`` into line with it.
+
+        A document with a TOC gets its sidecar written only when the content
+        differs, so an unrelated edit leaves the TOC files untouched in git.
+        A document whose TOC is empty has no sidecar.
+        """
         text = json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n"
         path.write_text(text, encoding="utf-8")
+        root = path.parent
+        for d in self.documents:
+            save_toc(toc_path(root, d.id), d.id, d.toc)
+
+    def orphan_tocs(self, path: Path) -> list[Path]:
+        """TOC files in ``toc/`` that no catalogued document owns."""
+        ids = {d.id for d in self.documents}
+        folder = toc_dir(path.parent)
+        if not folder.is_dir():
+            return []
+        return sorted(p for p in folder.glob("*.json") if p.stem not in ids)
 
     # -- queries -------------------------------------------------------
 

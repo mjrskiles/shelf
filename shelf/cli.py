@@ -596,6 +596,9 @@ def cmd_verify(args: argparse.Namespace) -> int:
         if pdf.resolve() not in catalogued and ".shelf" not in pdf.parts:
             print(f"ORPHAN   {pdf.relative_to(root)} is not in the manifest")
             problems += 1
+    for toc in manifest.orphan_tocs(manifest_path(root)):
+        print(f"ORPHAN   {toc.relative_to(root)} belongs to no catalogued document")
+        problems += 1
     open_fields = debt_mod.total_open(manifest)
     print(f"{len(manifest.documents)} documents, {problems} problem(s)")
     if open_fields:
