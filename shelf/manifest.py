@@ -235,6 +235,10 @@ class Manifest:
     version: int = SCHEMA_VERSION
     documents: list[Document] = field(default_factory=list)
     wanted: list[Wanted] = field(default_factory=list)
+    # Where the blobs and index are replicated: an rclone path such as
+    # "sbl-shelf:corpus" or a plain directory. The catalogue knows its store;
+    # each machine's rclone.conf knows how to reach it.
+    remote: str = ""
 
     # -- persistence ---------------------------------------------------
 
@@ -269,7 +273,7 @@ class Manifest:
                 wanted.append(Wanted(**w))
             except TypeError as e:
                 raise ShelfError(f"{where}: wanted {w.get('id', '?')}: {e}") from None
-        m = cls(version=version, documents=docs, wanted=wanted)
+        m = cls(version=version, documents=docs, wanted=wanted, remote=raw.get("remote", ""))
         m._check_unique()
         return m
 
@@ -288,11 +292,12 @@ class Manifest:
                 if raw[name] == empty:
                     del raw[name]
             docs.append(raw)
-        return {
-            "version": self.version,
-            "documents": docs,
-            "wanted": [asdict(w) for w in self.wanted],
-        }
+        out: dict[str, Any] = {"version": self.version}
+        if self.remote:
+            out["remote"] = self.remote
+        out["documents"] = docs
+        out["wanted"] = [asdict(w) for w in self.wanted]
+        return out
 
     def save(self, path: Path) -> None:
         """Write ``shelf.json`` and bring ``toc/`` into line with it.

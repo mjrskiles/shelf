@@ -87,6 +87,9 @@ shelf debt                                     # open metadata fields, by what c
 shelf undoable <id> revision "date only"       # this field cannot be filled — stop asking
 shelf ingest                                   # dry run: uncatalogued PDFs, moved files, duplicates
 shelf ingest --apply                           # catalog them with guessed metadata (revision unknown)
+shelf sync remote sbl-shelf:corpus             # record where the blobs live (an rclone path)
+shelf sync push                                # upload PDFs the store lacks, then the index
+shelf sync pull --index-only                   # on another machine: search without the PDFs
 ```
 
 ### Ingesting a pile of PDFs
@@ -225,11 +228,35 @@ in by hand:
 shelf edit mp3-and-aac-explained --author "Karlheinz Brandenburg" --year 1999 --venue "AES 17th Conference"
 ```
 
+### sync — one private store, three kinds of thing
+
+Hosting is three problems. The manifest is text and lives in git. The PDFs
+are vendor copyright and live in one private store. The index is derived,
+but a machine that pulls only the index gets full search and page text with
+no PDFs at all, so it is pushed alongside as a build artifact.
+
+`shelf sync` moves the last two through [rclone](https://rclone.org), so
+the store is anything rclone can reach — an Azure container, an S3 bucket,
+an SFTP host, or a plain directory. The manifest records the rclone path
+(`shelf sync remote sbl-shelf:corpus`); each machine's `rclone.conf` knows
+how to reach it. Under that path:
+
+```
+blobs/<sha256>      one per document, named by content — a file renamed or
+                    moved locally is never uploaded twice
+index/catalog.db    the FTS index; newest copy wins in either direction
+```
+
+`push` uploads every local document the store lacks, then the index. `pull`
+downloads every catalogued document missing here, verifies each against the
+sha256 in the manifest before placing it under its catalogued path, and
+rejects anything that does not match. `pull --index-only` is the second
+machine's first move: the manifest from git, the index from the store, and
+`search`/`grep`/`read`/`toc` all work before a single PDF arrives.
+`status` says what is where. `--no-index` leaves the index out of either.
+
 ## Roadmap
 
-- **remote sync** — `shelf sync` via rclone (SFTP today, S3-compatible
-  storage later) so the PDFs live in one private place and the manifest in
-  git.
 - **ingest from outside the root** — today `ingest` scans under the root;
   pointing it at `~/Downloads` and having it copy files in is the next step.
 - **toc from contents pages** — for PDFs with no bookmark outline, parse

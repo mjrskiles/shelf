@@ -14,6 +14,7 @@ from pathlib import Path
 from shelf import ShelfError, __version__
 from shelf import debt as debt_mod
 from shelf import inspect as inspection
+from shelf import sync as sync_mod
 from shelf import toc as toc_mod
 from shelf.config import (
     MANIFEST_NAME,
@@ -606,6 +607,58 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+def cmd_sync(args: argparse.Namespace) -> int:
+    root, manifest = _load(args)
+    if args.action == "remote":
+        if args.value:
+            manifest.remote = args.value
+            manifest.save(manifest_path(root))
+            print(f"remote: {args.value}")
+        elif manifest.remote:
+            print(manifest.remote)
+        else:
+            print("no remote recorded (`shelf sync remote <rclone-path>`)")
+            return 1
+        return 0
+    remote = sync_mod.resolve_remote(args.remote, manifest)
+    if args.action == "status":
+        p = sync_mod.plan(manifest, root, sync_mod.listing(remote, args.verbose))
+        for label, docs in (("to push", p.push), ("to pull", p.pull), ("nowhere", p.nowhere),
+                            ("unhashed", p.unhashed)):
+            for d in docs:
+                print(f"{label:<9} {d.id}")
+        print(f"{remote}: {len(p.both)} in both places, {len(p.push)} to push, {len(p.pull)} to pull"
+              + (f", {len(p.nowhere)} on no disk" if p.nowhere else "")
+              + (f", {len(p.unhashed)} without sha256" if p.unhashed else ""))
+        print(f"index: {'local' if p.local_index else 'no local'}, "
+              f"{'remote' if p.remote_index else 'no remote'}")
+        return 0
+    if args.action == "push":
+        p = sync_mod.push(manifest, root, remote, index=not args.no_index, verbose=args.verbose)
+        for d in p.push:
+            print(f"  ↑ {d.id}")
+        pushed_index = not args.no_index and p.local_index
+        print(f"pushed {len(p.push)} blob(s){' and the index' if pushed_index else ''} to {remote}; "
+              f"{len(p.both)} already there")
+        return 0
+    if args.action == "pull":
+        p, bad = sync_mod.pull(manifest, root, remote, index=not args.no_index,
+                               index_only=args.index_only, verbose=args.verbose)
+        if not args.index_only:
+            for d in p.pull:
+                print(f"  ↓ {d.id}")
+        for line in bad:
+            print(f"REJECTED {line}")
+        got = 0 if args.index_only else len(p.pull) - len(bad)
+        pulled_index = (args.index_only or not args.no_index) and p.remote_index
+        print(f"pulled {got} blob(s){' and the index' if pulled_index else ''} from {remote}"
+              + (f"; {len(p.nowhere)} catalogued document(s) are on no disk" if p.nowhere else ""))
+        if p.remote_index and pulled_index and not p.local_index:
+            print("index arrived — `shelf search` works now; PDFs are only needed for page images")
+        return 1 if bad else 0
+    raise ShelfError(f"unknown sync action {args.action!r}")
+
+
 def cmd_debt(args: argparse.Namespace) -> int:
     _, manifest = _load(args)
     full = debt_mod.census(manifest, tier=args.tier)
@@ -768,6 +821,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("verify", help="check files exist, hashes match, and no PDFs are uncatalogued")
     s.set_defaults(func=cmd_verify)
+
+    s = sub.add_parser("sync", help="replicate blobs and index to a remote store via rclone")
+    s.add_argument("action", choices=("status", "push", "pull", "remote"))
+    s.add_argument("value", nargs="?", help="for `remote`: the rclone path to record, e.g. sbl-shelf:corpus")
+    s.add_argument("--remote", help="rclone path for this run, overriding the manifest and SHELF_REMOTE")
+    s.add_argument("--no-index", action="store_true", help="blobs only")
+    s.add_argument("--index-only", action="store_true", help="pull: just the index — search without the PDFs")
+    s.add_argument("--verbose", "-v", action="store_true", help="show rclone's own output")
+    s.set_defaults(func=cmd_sync)
 
     s = sub.add_parser("debt", help="open metadata fields, grouped by what could close them")
     s.add_argument("--tier", choices=debt_mod.TIERS, help="only this tier")
