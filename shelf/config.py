@@ -8,6 +8,7 @@ from pathlib import Path
 from shelf import ShelfError
 
 MANIFEST_NAME = "shelf.json"
+TOC_DIR = "toc"
 STATE_DIR = ".shelf"
 DB_NAME = "catalog.db"
 
@@ -40,6 +41,18 @@ def find_root(explicit: str | os.PathLike[str] | None = None) -> Path:
 
 def manifest_path(root: Path) -> Path:
     return root / MANIFEST_NAME
+
+
+def toc_dir(root: Path) -> Path:
+    """Tables of contents, one ``<id>.json`` per document, next to the
+    manifest and tracked with it. A TOC is derived from the PDF outline, but
+    it is also what makes a section citable, so it travels with the catalogue
+    rather than with the index."""
+    return root / TOC_DIR
+
+
+def toc_path(root: Path, doc_id: str) -> Path:
+    return toc_dir(root) / f"{doc_id}.json"
 
 
 def db_path(root: Path) -> Path:

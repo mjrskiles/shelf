@@ -32,13 +32,19 @@ though it was built so that one can use it.
 
 ## How it works
 
-Three pieces, deliberately separate:
+Four pieces, deliberately separate:
 
 - **`shelf.json`** — the manifest. Human-editable, git-tracked, the source of
   truth. For each document: id, file, type, part numbers, revision, page
-  count, sha256, printed-page offset, text-layer quality, table of contents,
-  notes. Papers carry a byline instead of a revision — authors, year, venue,
-  doi. Plus a `wanted` list of documents you don't have yet.
+  count, sha256, printed-page offset, text-layer quality, notes. Papers carry
+  a byline instead of a revision — authors, year, venue, doi. Plus a `wanted`
+  list of documents you don't have yet.
+- **`toc/<id>.json`** — one table of contents per document, next to the
+  manifest and tracked with it. Built from the PDF outline, so it is derived,
+  but it is also what makes `§51.4.8` citable, so it travels with the
+  catalogue rather than with the index. Kept out of `shelf.json` because a
+  reference manual's outline runs to thousands of entries and would bury the
+  sixty lines of metadata a reviewer actually wants to read.
 - **`.shelf/catalog.db`** — a derived SQLite database with an FTS5 full-text
   index over every page of every PDF. Rebuildable at any time from the
   manifest and the PDFs; never synced, never backed up, never edited by hand.
@@ -113,8 +119,9 @@ again — they read the index, so they work at the speed of SQLite.
 ### toc — sections, not just pages
 
 `shelf toc <id> --build` reads the PDF's bookmark outline (via `pdftohtml`,
-no page rendering — a 3000-page manual takes under a second) into the
-manifest as `{section, title, page, pdf_page, level}` entries, splitting
+no page rendering — a 3000-page manual takes under a second) into
+`toc/<id>.json` as `{section, title, page, pdf_page, level}` entries, one per
+line so a rebuild diffs entry by entry, splitting
 "51.4.8 SAI clock generator" into number and title and skipping Table/Figure
 bookmarks unless `--tables`. Then `shelf toc <id>` lists it (`--depth`,
 `--grep`), `shelf read <id> §51.4.8` prints the whole section, and `search`
