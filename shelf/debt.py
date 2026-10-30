@@ -11,7 +11,7 @@ what decides who does the work:
     confirm   a value exists but `inspect` guessed it; corroborate on a page
               the detector did not vote on, then `edit` to clear the flag
     cover     stated in the document's own front matter
-    offset    printed folio minus PDF index, from two widely separated pages
+    offset    PDF index minus printed folio, from two widely separated pages
     web       not in the document at all — source_url, and years no cover gives
 
 A field recorded as undoable is not counted. Some fields cannot be filled from
@@ -67,7 +67,7 @@ def gaps_for(doc: Document) -> list[Gap]:
         add("cover", "title", "title block on the cover, verbatim")
 
     if doc.page_offset is None and "page_offset" not in doc.auto:
-        add("offset", "page_offset", "printed folio minus PDF index, on two distant pages")
+        add("offset", "page_offset", "PDF index minus printed folio, on two distant pages")
 
     if not doc.source_url:
         add("web", "source_url", "vendor or publisher download page")

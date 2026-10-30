@@ -78,6 +78,13 @@ def test_cli_end_to_end(shelf_root: Path, sample_pdf: Path, capsys: pytest.Captu
     assert main(["--root", root, "search", "fifo"]) == 0
     assert "rm-test Rev 2  p. 1" in capsys.readouterr().out
 
+    # A journal reprint starts mid-volume: PDF page 1 is printed page 974.
+    assert main(["--root", root, "edit", "rm-test", "--page-offset=-973"]) == 0
+    assert main(["--root", root, "search", "fifo"]) == 0
+    assert "rm-test Rev 2  p. 974" in capsys.readouterr().out
+    assert main(["--root", root, "show", "rm-test"]) == 0
+    assert "printed = pdf + 973" in capsys.readouterr().out
+
     assert main(["--root", root, "verify"]) == 0
     # An uncatalogued PDF is an orphan.
     shutil.copy(sample_pdf, shelf_root / "stray.pdf")
