@@ -158,7 +158,7 @@ by the cheapest thing that could close it:
 |------|----------------|
 | `confirm` | a value `inspect` guessed — corroborate it on a page the detector didn't vote on |
 | `cover` | the document's own front matter: revision, title, paper byline |
-| `offset` | printed folio minus PDF index, read off two widely separated pages |
+| `offset` | PDF index minus printed folio, read off two widely separated pages |
 | `web` | not in the document at all — `source_url`, and years no cover states |
 
 `--tier` and `--limit` carve out a batch, and `--json` makes it a work list.

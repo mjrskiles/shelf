@@ -170,7 +170,8 @@ def cmd_show(args: argparse.Namespace) -> int:
         print(f"  revision:    {d.revision}{auto}")
     print(f"  file:        {d.file}  ({'present' if on_disk else 'MISSING'})")
     if d.offset_known:
-        offset = f"printed = pdf − {d.page_offset}"
+        sign = "−" if d.page_offset >= 0 else "+"
+        offset = f"printed = pdf {sign} {abs(d.page_offset)}"
     elif d.is_undoable("page_offset"):
         offset = "no page offset — undoable"
     else:
